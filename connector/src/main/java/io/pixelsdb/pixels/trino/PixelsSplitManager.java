@@ -46,6 +46,7 @@ import io.pixelsdb.pixels.executor.predicate.ColumnFilter;
 import io.pixelsdb.pixels.executor.predicate.Filter;
 import io.pixelsdb.pixels.executor.predicate.TableScanFilter;
 import io.pixelsdb.pixels.planner.PixelsPlanner;
+import io.pixelsdb.pixels.planner.coordinate.PlanCoordinatorFactory;
 import io.pixelsdb.pixels.planner.plan.PlanOptimizer;
 import io.pixelsdb.pixels.planner.plan.logical.*;
 import io.pixelsdb.pixels.planner.plan.logical.Table.TableType;
@@ -200,28 +201,35 @@ public class PixelsSplitManager implements ConnectorSplitManager
                 // Ensure multi-pipeline join is supported.
                 JoinOperator joinOperator = (JoinOperator) planner.getRootOperator();
                 // logger.debug("join operator: " + JSON.toJSONString(joinOperator));
+                PlanCoordinatorFactory.Instance().createPlanCoordinator(transHandle.getTransId(), joinOperator);
                 CompletableFuture<Void> prevStages = joinOperator.executePrev();
-                prevStages.join();
                 logger.debug("invoke " + joinOperator.getName());
 
-                Thread outputCollector = new Thread(() -> {
-                    try
+                // PIXELS-491: do not block and wait for the completion of the previous stages.
+                prevStages.whenComplete((result, error) -> {
+                    if (error != null)
                     {
-                        JoinOperator.JoinOutputCollection outputCollection = joinOperator.collectOutputs();
-                        SerializerFeature[] features = new SerializerFeature[]{SerializerFeature.WriteClassName};
-                        String json = JSON.toJSONString(outputCollection, features);
-                        logger.info("join outputs: " + json);
-                        logger.info("total billed GB-ms: " + outputCollection.getTotalGBMs());
-                        logger.info("total read requests: " + outputCollection.getTotalNumReadRequests());
-                        logger.info("total write requests: " + outputCollection.getTotalNumWriteRequests());
-                    } catch (Exception e)
+                        logger.error(error, "failed to execute the tasks in the previous stages");
+                    }
+                    else
                     {
-                        logger.error(e, "failed to execute the join plan using pixels-lambda");
-                        throw new TrinoException(PixelsErrorCode.PIXELS_SQL_EXECUTE_ERROR,
-                                "failed to execute the join plan using pixels-lambda");
+                        try
+                        {
+                            JoinOperator.JoinOutputCollection outputCollection = joinOperator.collectOutputs();
+                            SerializerFeature[] features = new SerializerFeature[]{SerializerFeature.WriteClassName};
+                            String json = JSON.toJSONString(outputCollection, features);
+                            logger.info("join outputs: " + json);
+                            logger.info("total billed GB-ms: " + outputCollection.getTotalGBMs());
+                            logger.info("total read requests: " + outputCollection.getTotalNumReadRequests());
+                            logger.info("total write requests: " + outputCollection.getTotalNumWriteRequests());
+                        } catch (Exception e)
+                        {
+                            logger.error(e, "failed to execute the join plan using pixels-lambda");
+                            throw new TrinoException(PixelsErrorCode.PIXELS_SQL_EXECUTE_ERROR,
+                                    "failed to execute the join plan using pixels-lambda");
+                        }
                     }
                 });
-                outputCollector.start();
 
                 // Build the splits of the join result.
                 ImmutableList.Builder<PixelsSplit> splitsBuilder = ImmutableList.builder();
@@ -257,28 +265,35 @@ public class PixelsSplitManager implements ConnectorSplitManager
                         Optional.of(this.metadataProxy.getMetadataService()));
                 AggregationOperator aggrOperator = (AggregationOperator) planner.getRootOperator();
                 // logger.debug("aggregation operator: " + JSON.toJSONString(aggrOperator));
+                PlanCoordinatorFactory.Instance().createPlanCoordinator(transHandle.getTransId(), aggrOperator);
                 CompletableFuture<Void> prevStages = aggrOperator.executePrev();
-                prevStages.join();
                 logger.debug("invoke " + aggrOperator.getName());
 
-                Thread outputCollector = new Thread(() -> {
-                    try
+                // PIXELS-491: do not block and wait for the completion of the previous stages.
+                prevStages.whenComplete((result, error) -> {
+                    if (error != null)
                     {
-                        Operator.OutputCollection outputCollection = aggrOperator.collectOutputs();
-                        SerializerFeature[] features = new SerializerFeature[]{SerializerFeature.WriteClassName};
-                        String json = JSON.toJSONString(outputCollection, features);
-                        logger.info("aggregation outputs: " + json);
-                        logger.info("total billed GB-ms: " + outputCollection.getTotalGBMs());
-                        logger.info("total read requests: " + outputCollection.getTotalNumReadRequests());
-                        logger.info("total write requests: " + outputCollection.getTotalNumWriteRequests());
-                    } catch (Exception e)
+                        logger.error(error, "failed to execute the tasks in the previous stages");
+                    }
+                    else
                     {
-                        logger.error(e, "failed to execute the aggregation plan using pixels-lambda");
-                        throw new TrinoException(PixelsErrorCode.PIXELS_SQL_EXECUTE_ERROR,
-                                "failed to execute the aggregation plan using pixels-lambda");
+                        try
+                        {
+                            Operator.OutputCollection outputCollection = aggrOperator.collectOutputs();
+                            SerializerFeature[] features = new SerializerFeature[]{SerializerFeature.WriteClassName};
+                            String json = JSON.toJSONString(outputCollection, features);
+                            logger.info("aggregation outputs: " + json);
+                            logger.info("total billed GB-ms: " + outputCollection.getTotalGBMs());
+                            logger.info("total read requests: " + outputCollection.getTotalNumReadRequests());
+                            logger.info("total write requests: " + outputCollection.getTotalNumWriteRequests());
+                        } catch (Exception e)
+                        {
+                            logger.error(e, "failed to execute the aggregation plan using pixels-lambda");
+                            throw new TrinoException(PixelsErrorCode.PIXELS_SQL_EXECUTE_ERROR,
+                                    "failed to execute the aggregation plan using pixels-lambda");
+                        }
                     }
                 });
-                outputCollector.start();
 
                 // Build the split of the aggregation result.
                 List<AggregationInput> aggrInputs = aggrOperator.getFinalAggrInputs();
